@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dirsrv
+spec:
+  replicas: 6
+  template:
+    spec:
+      volumes:
+        - name: dirsrv-data
+          emptyDir: null
+

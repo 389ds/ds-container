@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dirsrv
+  labels:
+    app: dirsrv
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dirsrv
+  template:
+    metadata:
+      labels:
+        app: dirsrv
+    spec:
+      serviceAccountName: svc-dirsrv
+      containers:
+        - name: dirsrv
+          image: quay.io/vashirov/ds-container
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: data-config
+              mountPath: /data/config
+            - name: data-ssca
+              mountPath: /data/ssca
+            - name: data-run
+              mountPath: /data/run
+          ports:
+            - containerPort: 30389
+              name: dirsrv
+          securityContext:
+            runAsUser: 389
+            runAsGroup: 389
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: data-config
+          emptyDir: {}
+        - name: data-ssca
+          emptyDir: {}
+        - name: data-run
+          emptyDir: {}

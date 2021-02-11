@@ -1,0 +1,455 @@
+#!/usr/bin/python3
+
+# --- BEGIN COPYRIGHT BLOCK ---
+# Copyright (C) 2019 William Brown <william@blackhats.net.au>
+# All rights reserved.
+#
+# License: GPL (version 3 or any later version).
+# See LICENSE for details.
+# --- END COPYRIGHT BLOCK ---
+
+# Why does this exist, and what does it do?
+###########################################
+#
+# This entry point exists because it's hard to make 389 really "stateless"
+# in the way a container environment expects, and especially with systems
+# like kubernetes with volume setup etc.
+#
+# This script will detect if an instance exists in the volume locations
+# and if one does not (new, or ephemeral) we create a container-optimised
+# instance of 389-ds.
+#
+# If an instance *does* exist, we will start it up, and let it run. Simple
+# as that!
+#
+
+import grp
+import pwd
+import atexit
+import os
+import time
+import signal
+import sys
+import subprocess
+import argparse, argcomplete
+from argparse import RawTextHelpFormatter
+
+
+from lib389 import DirSrv
+from lib389.cli_base import setup_script_logger
+from lib389.instance.setup import SetupDs
+from lib389.instance.options import General2Base, Slapd2Base
+from lib389.passwd import password_generate
+from lib389.nss_ssl import NssSsl, CERT_NAME
+from lib389.paths import Paths
+from lib389.config import LDBMConfig
+from lib389._constants import (
+    DSRC_CONTAINER,
+    CONTAINER_TLS_SERVER_KEY,
+    CONTAINER_TLS_SERVER_CERT,
+    CONTAINER_TLS_SERVER_CADIR,
+    CONTAINER_TLS_PWDFILE
+)
+
+from lib389.idm.directorymanager import DirectoryManager
+
+# We setup the logger in verbose mode to make sure debug info
+# is always available!
+log = setup_script_logger("container-init", True)
+
+# Handle any dead child process signals we receive. Wait for them to terminate, or
+# if they are not found, move on.
+#
+# We take *args and **kwargs here to handle the fact that this signal gets args, but
+# we don't need or care about them.
+def _sigchild_handler(*args, **kwargs):
+    # log.debug("Received SIGCHLD ...")
+    os.waitpid(-1, os.WNOHANG)
+
+# Start the exit process.
+def _sigterm_handler(*args, **kwargs):
+    exit()
+
+def _gen_instance():
+    inst = DirSrv(verbose=True)
+    inst.local_simple_allocate("localhost")
+    inst.setup_ldapi()
+    return inst
+
+def _begin_environment_config():
+    inst = _gen_instance()
+    inst.open()
+    # TODO: Should we reset cn=Directory Manager from env?
+    dm_pass = os.getenv("DS_DM_PASSWORD", None)
+    if dm_pass is not None:
+        log.debug("Setting Directory Manager Password ...")
+        dm = DirectoryManager(inst)
+        dm.change_password(dm_pass)
+    # TODO: Should we set replica id from env?
+    # TODO: Should we set replication agreements from env?
+    autotune_pct = os.getenv("DS_MEMORY_PERCENTAGE", None)
+    if autotune_pct is not None:
+        try:
+            autotune_pct = int(autotune_pct)
+        except:
+            log.error("Invalid DS_MEMORY_PERCENTAGE - resetting to system default value")
+            autotune_pct = 0
+        log.debug("Setting LDBM Autotune Percentage to: %s", autotune_pct)
+        ldbmconfig = LDBMConfig(inst)
+        ldbmconfig.set("nsslapd-cache-autosize", str(autotune_pct))
+
+    inst.close()
+
+def _begin_setup_pem_tls():
+    # If we have the needed files, we can use them.
+    #
+    # We need at least:
+    # * 1 ca in the ca's folder
+    # * the server.key
+    # * the server.crt
+    #
+    # Optional future idea: we have many ca's in ca folder
+    log.info("Checking for PEM TLS files ...")
+    have_atleast_ca = False
+    have_server_key = os.path.exists(CONTAINER_TLS_SERVER_KEY)
+    have_server_cert = os.path.exists(CONTAINER_TLS_SERVER_CERT)
+    have_pwdfile = os.path.exists(CONTAINER_TLS_PWDFILE)
+    if os.path.exists(CONTAINER_TLS_SERVER_CADIR) and os.path.isdir(CONTAINER_TLS_SERVER_CADIR):
+        cas = [ca for ca in os.listdir(CONTAINER_TLS_SERVER_CADIR) if ca.endswith('.crt')]
+        log.info("Found -> %s" % cas)
+        have_atleast_ca = len(cas) > 0
+    log.info("Have %s -> %s" % (CONTAINER_TLS_SERVER_KEY, have_server_key))
+    log.info("Have %s -> %s" % (CONTAINER_TLS_SERVER_CERT, have_server_cert))
+    log.info("Have %s -> %s" % (CONTAINER_TLS_SERVER_CADIR, have_atleast_ca))
+    log.info("Have %s -> %s" % (CONTAINER_TLS_PWDFILE, have_pwdfile))
+
+    if not (have_atleast_ca and have_server_key and have_server_cert and have_pwdfile):
+        log.info("Unable to configure TLS from PEM, missing a required file.")
+        return
+    log.info("TLS PEM requirements met - configuring NSSDB ...")
+    inst = _gen_instance()
+    tls = NssSsl(dirsrv=inst)
+    # First, remove the existing server-cert.
+    tls.del_cert(CERT_NAME)
+    # Import the ca's
+    for ca_path in [os.path.join(CONTAINER_TLS_SERVER_CADIR, ca) for ca in cas]:
+        log.info("Enrolling -> %s" % ca_path)
+        tls.add_cert(nickname=ca_path, input_file=ca_path)
+        tls.edit_cert_trust(ca_path, "C,,")
+    # Import the new server-cert
+    tls.add_server_key_and_cert(CONTAINER_TLS_SERVER_KEY, CONTAINER_TLS_SERVER_CERT)
+    # Done!
+    log.info("TLS PEM configuration complete.")
+
+def _begin_check_reindex():
+    if os.getenv('DS_REINDEX', None) is not None:
+        log.info("Reindexing database. This may take a while ...")
+        inst = _gen_instance()
+        inst.db2index()
+
+def begin_magic():
+    log.info("The 389 Directory Server Container Bootstrap")
+    # Leave this comment here: UofA let me take this code with me provided
+    # I gave attribution. -- wibrown
+    log.info("Inspired by works of: ITS, The University of Adelaide")
+
+    # Setup our ds_paths ...
+    # Notice we pre-populate the instance id, which allows the start up to work correctly
+    # to find the correct configuration path?
+    #
+    # We wouldn't need this *except* for testing containers that build to /opt/dirsrv
+    paths = Paths(serverid='localhost')
+    log.info("389 Directory Server Version: %s" % paths.version)
+
+    # Make sure that /data/config, /data/ssca and /data/config exist, because
+    # k8s may not template them out.
+    #
+    # Big note for those at home: This means you need your dockerfile to run
+    # something like:
+    # EXPOSE 3389 3636
+    # RUN mkdir -p /data/config && \
+    #     mkdir -p /data/ssca && \
+    #     mkdir -p /data/run && \
+    #     mkdir -p /run/dirsrv && \
+    #     ln -s /data/config /etc/dirsrv/slapd-localhost && \
+    #     ln -s /data/ssca /etc/dirsrv/ssca && \
+    #     ln -s /data/run /run/dirsrv
+    # # Temporal volumes for each instance
+    # VOLUME /data
+    #
+    # When I said this was a container tool, I really really meant it!
+    #
+    # Q: "William, why do you symlink in these locations?"
+    # A: Docker lets you mount in volumes. The *simpler* we can make this for a user
+    # the absolute beter. This means any downstream container can simply use:
+    # docker run -v 389_data:/data ... 389-ds:latest
+    # If we were to use the "normal paths", we would require MORE volume mounts, with
+    # cryptic paths and complexity. Not friendly at all.
+    #
+    # Q: "William, why not change the paths in the config?"
+    # A: Despite the fact that ds alleges support for moving content and paths, this
+    # is not possible for the /etc/dirsrv content unless at COMPILE time. Additionally
+    # some parts of the code base make assumptions. Instead of fighting legacy, we want
+    # results now! So we mask our limitations with symlinks.
+    #
+    for d in [
+        '/data/config',
+        '/data/ssca',
+        '/data/db',
+        '/data/bak',
+        '/data/ldif',
+        '/data/run',
+        '/data/run/lock',
+        '/data/run/dbhome',
+        '/data/logs'
+    ]:
+        if not os.path.exists(d):
+            # Yolo, container security is from ns isolation, not unix perms. When we drop
+            # privs we'll need this to support future writes.
+            os.makedirs(d, mode=0o777)
+
+    # Do we have correct permissions to our volumes? With the power of thoughts and
+    # prayers, we continue blindy and ... well hope.
+
+    # Do we have an instance? We can only tell by the DSRC_CONTAINER marker file
+    if not os.path.exists(DSRC_CONTAINER):
+        # Nope? Make one ...
+        log.info("Initialising 389-ds-container due to empty volume ...")
+        rpw = password_generate()
+
+        g2b = General2Base(log)
+        s2b = Slapd2Base(log)
+        # Fill in container defaults?
+
+        g2b.set('strict_host_checking', False)
+        g2b.set('selinux', False)
+        g2b.set('systemd', False)
+        g2b.set('start', False)
+
+        s2b.set('instance_name', 'localhost')
+
+        # We use our user/group from the current user, begause in envs like kubernetes
+        # it WILL NOT be dirsrv
+        user_name = pwd.getpwuid(os.getuid())[0]
+        group_name = grp.getgrgid(os.getgid())[0]
+
+        s2b.set('user', user_name)
+        s2b.set('group', group_name)
+        s2b.set('root_password', rpw)
+        s2b.set('port', 3389)
+        s2b.set('secure_port', 3636)
+
+        s2b.set('local_state_dir', '/data')
+        s2b.set('inst_dir', '/data')
+        s2b.set('db_dir', '/data/db')
+        # 51008, ds changed dbhome for bdb to /dev/shm, however in docker this
+        # defaults to 64M and DS requires at least 130M. It may not be possible to
+        # Ask people to change this in their deployments, and in the interest of
+        # simplicity, we just put this into a /data/run directory instead to make
+        # containers as painless as possible. If people want it to be a ram disk
+        # they can easily use something like:
+        #    docker run --tmpfs /data/run/dbhome:rw
+        s2b.set('db_home_dir', '/data/run/dbhome')
+        # Why is this bak? Some dsctl commands use INST_DIR/bak, not "backup_dir"
+        # due to some legacy handling of paths in lib389's population of instances.
+        s2b.set('backup_dir', '/data/bak')
+        s2b.set('ldif_dir', '/data/ldif')
+        s2b.set('run_dir', '/data/run')
+        s2b.set('lock_dir', '/data/run/lock')
+        s2b.set('ldapi', '/data/run/slapd.socket')
+
+        s2b.set('log_dir', '/data/logs')
+        s2b.set('access_log', '/data/logs/access')
+        s2b.set('error_log', '/data/logs/error')
+        s2b.set('audit_log', '/data/logs/audit')
+
+        # Now collect and submit for creation.
+        sds = SetupDs(verbose=True, dryrun=False, log=log, containerised=True)
+
+        if not sds.create_from_args(g2b.collect(), s2b.collect()):
+            log.error("Failed to create instance")
+            sys.exit(1)
+
+        log.info("IMPORTANT: Set cn=Directory Manager password to \"%s\"" % rpw)
+
+        # Create the marker to say we exist. This is also a good writable permissions
+        # test for the volume.
+        with open(DSRC_CONTAINER, 'w') as f:
+            f.write("""
+[localhost]
+# Note that '/' is replaced to '%%2f' for ldapi url format.
+# So this is pointing to /data/run/slapd-localhost.socket
+uri = ldapi://%%2fdata%%2frun%%2fslapd-localhost.socket
+binddn = cn=Directory Manager
+# Set your basedn here
+# basedn = dc=example,dc=com
+            """)
+        os.chmod(DSRC_CONTAINER, 0o755)
+
+    # Setup TLS from PEM files as required.
+    _begin_setup_pem_tls()
+
+    # If we have been requested to re-index, do so now ...
+    _begin_check_reindex()
+
+    # Yep! Run it ...
+    # Now unlike a normal lib389 start, we use subprocess and don't fork!
+    # TODO: Should we pass in a loglevel from env?
+    log.info("Starting 389-ds-container ...")
+
+    # We can't use the instance "start" because we need the pid handler so we can do
+    # a wait/block on it. That's why we do the Popen here direct.
+    global ds_proc
+    ds_proc = subprocess.Popen([
+        "%s/ns-slapd" % paths.sbin_dir,
+        "-D", paths.config_dir,
+        # This container version doesn't actually use or need the pidfile to track
+        # the process.
+        # "-i", "/data/run/slapd-localhost.pid",
+        # See /ldap/servers/slapd/slap.h SLAPD_DEFAULT_ERRORLOG_LEVEL
+        "-d", "266354688",
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=os.environ.copy())
+
+    # Setup the process and shutdown handler in an init-esque fashion.
+    def kill_ds():
+        if ds_proc is None:
+            pass
+        else:
+            try:
+                ds_proc.terminate()
+                log.info("STOPPING: Sent SIGTERM to ns-slapd ...")
+            except:
+                # It's already gone ...
+                pass
+        log.info("STOPPING: Shutting down 389-ds-container ...")
+        # To make sure we really do shutdown, we actually re-block on the proc
+        # again here to be sure it's done.
+        ds_proc.wait()
+        log.info("STOPPED: Shut down 389-ds-container")
+
+    atexit.register(kill_ds)
+
+    # Wait on the health check to show we are ready for ldapi.
+    healthy = False
+    max_failure_count = 20
+    for i in range(0, max_failure_count):
+        if ds_proc is None:
+            log.warning("ns-slapd pid has disappeared ...")
+            break
+        (check_again, healthy) = begin_healthcheck(ds_proc)
+        if check_again is False:
+            break
+        time.sleep(3)
+        # Check again then ....
+    if not healthy:
+        log.error("389-ds-container failed to start")
+        sys.exit(1)
+
+    # Now via ldapi, set some values.
+    log.info("Applying environment configuration (if present) ...")
+    _begin_environment_config()
+
+    log.info("389-ds-container started.")
+
+    # If oneshot parameter is passed, run an optional script and
+    # shutdown the server.
+    if args.oneshot != False:
+        if args.oneshot != None:
+            if os.path.exists(args.oneshot):
+                log.info("Running oneshot script...")
+                oneshot_p = subprocess.Popen(args.oneshot, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, env=os.environ.copy())
+                oneshot_p.wait()
+            else:
+                log.info("Oneshot script is not found!")
+        kill_ds()
+
+    # Now block until we get shutdown! If we are signaled to exit, this
+    # will trigger the atexit handler from above.
+    try:
+        ds_proc.wait()
+    except KeyboardInterrupt:
+        pass
+    # THE LETTER OF THE DAY IS C AND THE NUMBER IS 10
+
+
+def begin_healthcheck(ds_proc):
+    # We skip the pid check if ds_proc is none because that means it's coming from the
+    # container healthcheck.
+    if ds_proc is not None and ds_proc.poll() is not None:
+        # Ruh-Roh
+        log.warning("ns-slapd pid has completed, you should check the error log ...")
+        return (False, False)
+    # Now do an ldapi check, make sure we are dm.
+    try:
+        inst = _gen_instance()
+        inst.open()
+        if "dn: cn=Directory Manager" == inst.whoami_s():
+            return (False, True)
+        else:
+            log.error("The instance may be misconfigured, unable to cn=Directory Manager autobind.")
+            return (False, False)
+    except:
+        log.debug("Instance LDAPI not functional (yet?)")
+        pass
+    return (True, False)
+
+
+if __name__ == '__main__':
+    # Before all else, we are INIT so setup sigchild
+    signal.signal(signal.SIGCHLD, _sigchild_handler)
+    # Setup catching for term and int
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+    signal.signal(signal.SIGINT, _sigterm_handler)
+    signal.signal(signal.SIGHUP, _sigterm_handler)
+
+    parser = argparse.ArgumentParser(allow_abbrev=True, description="""
+dscontainer - this is a container entry point that will run a stateless
+instance of 389-ds. You should not use this unless you are developing or
+building a container image of some nature. As a result, this tool is
+*extremely* opinionated, and you will need your container build file to
+have certain settings to work correctly.
+
+\tEXPOSE 3389 3636
+\tRUN mkdir -p /data/config && \\
+\t    mkdir -p /data/ssca && \\
+\t    mkdir -p /data/run && \\
+\t    mkdir -p /run/dirsrv && \\
+\t    ln -s /data/config /etc/dirsrv/slapd-localhost && \\
+\t    ln -s /data/ssca /etc/dirsrv/ssca && \\
+\t    ln -s /data/run /run/dirsrv
+\tVOLUME /data
+
+This is an example of the minimal required configuration. The 389
+instance will be created with ports 3389 and 3636. *All* of the data will
+be installed under /data. This means that to "reset" an instance you only
+need to remove the content of /data. In the case there is no instance
+one will be created.
+
+No backends or suffixes are created by default, as we can not assume your
+domain component. The cn=Directory Manager password is randomised on
+install, and can be viewed in the setup log, or can be accessed via ldapi
+- the ldapi socket is placed into /data so you can access it from the
+container host.
+    """, formatter_class=RawTextHelpFormatter)
+    parser.add_argument('-r', '--runit',
+                        help="Actually run the instance! You understand what that means ...",
+                        action='store_true', default=False, dest='runit')
+    parser.add_argument('-o', '--oneshot',
+                        help="Run the instance once and shutdown. Optionally run a config script.",
+                        action='store', default=False, nargs='?', type=str, dest='oneshot')
+    parser.add_argument('-H', '--healthcheck',
+                        help="Start a healthcheck inside of the container for an instance. You should understand what this means ...",
+                        action='store_true', default=False, dest='healthcheck')
+
+    argcomplete.autocomplete(parser)
+
+    args = parser.parse_args()
+
+    if args.runit:
+        begin_magic()
+    elif args.healthcheck:
+        if begin_healthcheck(None) == (False, True):
+            sys.exit(0)
+        else:
+            sys.exit(1)

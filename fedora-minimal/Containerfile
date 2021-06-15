@@ -1,0 +1,38 @@
+FROM registry.fedoraproject.org/fedora-minimal:34
+
+LABEL name="dirsrv" \
+      vendor="389 Directory Server" \
+      version="2.0.5" \
+      release="20210530" \
+      url="https://www.port389.org" \
+      summary="389 Directory Server" \
+      description="389 Directory Server is an LDAPv3 compliant server" \
+      maintainer="389 Directory Server <389-devel@lists.fedoraproject.org>" \
+      com.redhat.component="389-ds-base" \
+      io.k8s.description="389 Directory Server Container" \
+      io.k8s.display-name="389 Directory Server Container" \
+      io.openshift.expose-services="3389:3636" \
+      io.openshift.tags="ldap,directory server,identity management"
+
+RUN microdnf update -y && microdnf install -y --setopt=install_weak_deps=0 389-ds-base && microdnf clean all
+
+RUN mkdir -p /data/config && \
+    mkdir -p /data/ssca && \
+    mkdir -p /data/run && \
+    mkdir -p /run/dirsrv && \
+    ln -sf /data/config /etc/dirsrv/slapd-localhost && \
+    ln -sf /data/ssca /etc/dirsrv/ssca && \
+    ln -sf /data/run /run/dirsrv && \
+    chown -R dirsrv: /data && \
+    chown -R dirsrv: /run/dirsrv && \
+    chgrp -R dirsrv /etc/dirsrv 
+
+EXPOSE 3389 3636
+
+USER dirsrv
+
+# https://github.com/389ds/389-ds-base/commit/da522d5359594976d525efe52b825361356d3d6f
+ADD https://raw.githubusercontent.com/389ds/389-ds-base/da522d5359594976d525efe52b825361356d3d6f/src/lib389/cli/dscontainer /usr/libexec/dirsrv/dscontainer
+RUN chmod +x /usr/libexec/dirsrv/dscontainer
+
+CMD [ "/usr/libexec/dirsrv/dscontainer", "-r" ] 

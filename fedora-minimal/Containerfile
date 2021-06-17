@@ -27,12 +27,11 @@ RUN mkdir -p /data/config && \
     chown -R dirsrv: /run/dirsrv && \
     chgrp -R dirsrv /etc/dirsrv 
 
-EXPOSE 3389 3636
-
-USER dirsrv
-
 # https://github.com/389ds/389-ds-base/commit/da522d5359594976d525efe52b825361356d3d6f
 ADD https://raw.githubusercontent.com/389ds/389-ds-base/da522d5359594976d525efe52b825361356d3d6f/src/lib389/cli/dscontainer /usr/libexec/dirsrv/dscontainer
 RUN chmod +x /usr/libexec/dirsrv/dscontainer
 
+EXPOSE 3389 3636
+
+USER dirsrv
 CMD [ "/usr/libexec/dirsrv/dscontainer", "-r" ] 

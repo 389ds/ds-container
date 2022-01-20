@@ -1,9 +1,9 @@
-FROM registry.fedoraproject.org/fedora-minimal:34
+FROM registry.fedoraproject.org/fedora-minimal:35
 
 LABEL name="dirsrv" \
       vendor="389 Directory Server" \
-      version="2.0.7" \
-      release="20210715" \
+      version="2.0.12" \
+      release="20211217" \
       url="https://www.port389.org" \
       summary="389 Directory Server" \
       description="389 Directory Server is an LDAPv3 compliant server" \
@@ -16,10 +16,12 @@ LABEL name="dirsrv" \
 
 RUN microdnf update -y && microdnf install -y --setopt=install_weak_deps=0 389-ds-base && microdnf clean all
 
+# Workaround for https://github.com/389ds/389-ds-base/issues/5124
+RUN sed -i -e 's@^pid_file.*@pid_file = /run/dirsrv/slapd-{instance_name}.pid@g' /usr/share/dirsrv/inf/defaults.inf
+
 RUN mkdir -p /data/config && \
     mkdir -p /data/ssca && \
     mkdir -p /data/run && \
-    mkdir -p /run/dirsrv && \
     ln -sf /data/config /etc/dirsrv/slapd-localhost && \
     ln -sf /data/ssca /etc/dirsrv/ssca && \
     ln -sf /data/run /run/dirsrv && \

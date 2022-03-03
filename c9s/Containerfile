@@ -1,4 +1,4 @@
-FROM registry.fedoraproject.org/fedora-minimal:35
+FROM quay.io/centos/centos:stream9
 
 LABEL name="dirsrv" \
       vendor="389 Directory Server" \
@@ -14,7 +14,7 @@ LABEL name="dirsrv" \
       io.openshift.expose-services="3389:3636" \
       io.openshift.tags="ldap,directory server,identity management"
 
-RUN microdnf update -y && microdnf install -y --setopt=install_weak_deps=0 389-ds-base && microdnf clean all
+RUN dnf update -y && dnf install -y --setopt=install_weak_deps=0 389-ds-base && dnf clean all
 
 RUN mkdir -p /data/config && \
     mkdir -p /data/ssca && \

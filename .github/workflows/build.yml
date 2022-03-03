@@ -31,6 +31,15 @@ jobs:
           push: true
           tags: quay.io/389ds/dirsrv:latest
 
+      - name: Push base images to quay.io
+        uses: docker/build-push-action@v2
+        with:
+          context: ./c9s
+          file: ./c9s/Containerfile
+          no-cache: true
+          push: true
+          tags: quay.io/389ds/dirsrv:c9s
+
       - name: Push demo images to quay.io
         uses: docker/build-push-action@v2
         with:

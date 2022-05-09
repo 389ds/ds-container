@@ -2,8 +2,8 @@ FROM registry.fedoraproject.org/fedora-minimal:35
 
 LABEL name="dirsrv" \
       vendor="389 Directory Server" \
-      version="2.0.14" \
-      release="20220128" \
+      version="2.0.15" \
+      release="20220323" \
       url="https://www.port389.org" \
       summary="389 Directory Server" \
       description="389 Directory Server is an LDAPv3 compliant server" \
@@ -14,7 +14,7 @@ LABEL name="dirsrv" \
       io.openshift.expose-services="3389:3636" \
       io.openshift.tags="ldap,directory server,identity management"
 
-RUN microdnf update -y && microdnf install -y --setopt=install_weak_deps=0 389-ds-base && microdnf clean all
+RUN microdnf update -y && microdnf install -y --setopt=install_weak_deps=0 389-ds-base tar && microdnf clean all
 
 RUN mkdir -p /data/config && \
     mkdir -p /data/ssca && \

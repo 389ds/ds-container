@@ -1,9 +1,9 @@
-FROM registry.fedoraproject.org/fedora-minimal:35
+FROM registry.fedoraproject.org/fedora-minimal:36
 
 LABEL name="dirsrv" \
       vendor="389 Directory Server" \
-      version="2.0.15" \
-      release="20220323" \
+      version="2.1.5" \
+      release="20220823" \
       url="https://www.port389.org" \
       summary="389 Directory Server" \
       description="389 Directory Server is an LDAPv3 compliant server" \
@@ -24,11 +24,9 @@ RUN mkdir -p /data/config && \
     ln -sf /data/run /run/dirsrv && \
     chown -R dirsrv: /data && \
     chown -R dirsrv: /run/dirsrv && \
-    chgrp -R dirsrv /etc/dirsrv 
+    chgrp -R dirsrv /etc/dirsrv
 
 EXPOSE 3389 3636
 
-ADD https://raw.githubusercontent.com/389ds/389-ds-base/389-ds-base-2.0/src/lib389/cli/dscontainer /usr/libexec/dirsrv/dscontainer
-RUN chmod 755 /usr/libexec/dirsrv/dscontainer
-USER dirsrv
-CMD [ "/usr/libexec/dirsrv/dscontainer", "-r" ] 
+#USER dirsrv
+CMD [ "/usr/libexec/dirsrv/dscontainer", "-r" ]

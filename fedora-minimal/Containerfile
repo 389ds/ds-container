@@ -2,8 +2,6 @@ FROM registry.fedoraproject.org/fedora-minimal:36
 
 LABEL name="dirsrv" \
       vendor="389 Directory Server" \
-      version="2.1.5" \
-      release="20220823" \
       url="https://www.port389.org" \
       summary="389 Directory Server" \
       description="389 Directory Server is an LDAPv3 compliant server" \

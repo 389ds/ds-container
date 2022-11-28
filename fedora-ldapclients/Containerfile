@@ -1,4 +1,4 @@
-FROM registry.fedoraproject.org/fedora:35
+FROM registry.fedoraproject.org/fedora:36
 
 RUN dnf install openldap-clients bind-utils nmap ldapvi vim-enhanced 389-ds-base -y \
     && dnf clean all

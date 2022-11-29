@@ -16,6 +16,7 @@ jobs:
     environment: CI
     runs-on: ubuntu-22.04
     strategy:
+      fail-fast: false
       matrix:
         include:
         - context: ./fedora-minimal

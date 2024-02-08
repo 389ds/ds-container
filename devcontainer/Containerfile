@@ -1,0 +1,6 @@
+FROM fedora:39
+
+RUN dnf install -y dnf-utils git python-unversioned-command python3 python3-pip clang lmdb-devel json-c-devel pcre-devel && \
+    dnf builddep -y 389-ds-base && \
+    dnf update -y && \
+    dnf clean all

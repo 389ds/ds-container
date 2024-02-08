@@ -1,4 +1,4 @@
-FROM registry.fedoraproject.org/fedora-minimal:37
+FROM registry.fedoraproject.org/fedora-minimal:39
 
 LABEL name="dirsrv" \
       vendor="389 Directory Server" \

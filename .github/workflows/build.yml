@@ -31,12 +31,15 @@ jobs:
         - context: ./fedora-sample_entries
           tag: dirsrv-demo:latest
           archs: amd64, arm64
+        - context: ./devcontainer
+          tag: devcontainer:latest
+          archs: amd64, arm64
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v3
 
       - name: Build image
         id: build-image

@@ -1,6 +1,89 @@
 FROM fedora:rawhide
 
-RUN dnf install -y dnf-utils git python-unversioned-command python3 python3-pip clang lmdb-devel json-c-devel pcre-devel && \
-    dnf builddep -y 389-ds-base && \
+RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo
+RUN dnf install -y \
+acl \
+autoconf \
+automake \
+bash-completion \
+bind-utils \
+bzip2 \
+bzip2-devel \
+cargo \
+clang \
+coreutils-common \
+cracklib-devel \
+cracklib-dicts \
+cyrus-sasl-devel \
+cyrus-sasl-gssapi \
+cyrus-sasl-md5 \
+cyrus-sasl-plain \
+dnf-utils \
+doxygen \
+gcc \
+gcc-c++ \
+gdb \
+git \
+hostname \
+icu \
+iproute \
+json-c-devel \
+krb5-devel \
+ldapvi \
+libasan \
+libatomic \
+libcmocka-devel \
+libdb-devel \
+libevent-devel \
+libicu-devel \
+libtool \
+libtsan \
+libubsan \
+lld \
+lm_sensors-devel \
+lmdb-devel \
+make \
+man \
+net-snmp-devel \
+net-tools \
+nodejs \
+nspr-devel \
+nss-devel \
+nss-tools \
+openldap-clients \
+openldap-devel \
+openssl \
+openssl-devel \
+openssl-perl \
+pam-devel \
+pcre2-devel \
+pkgconfig \
+policycoreutils-python-utils \
+procps-ng \
+psmisc \
+python-unversioned-command \
+python3-argcomplete \
+python3-argparse-manpage \
+python3-cryptography \
+python3-dateutil \
+python3-devel \
+python3-ldap \
+python3-libselinux \
+python3-pip \
+python3-policycoreutils \
+python3-pyasn1 \
+python3-pyasn1-modules \
+python3-setuptools \
+rpm-build \
+rsync \
+rust \
+selinux-policy \
+systemd-devel \
+uuid \
+vim \
+wget \
+zlib-devel \
+    && \
     dnf update -y && \
     dnf clean all
+
